@@ -12,16 +12,18 @@ app.use(express.json());
 
 // Helper function to build the SQL query dynamically
 const fetchProfiles = async (filters, reqQuery) => {
-    let { page = 1, limit = 10, sort_by = 'created_at', order = 'desc' } = reqQuery;
-    
+    // 1. Bulletproof Pagination
+    const page = Math.max(1, parseInt(reqQuery.page) || 1);
+    const limit = Math.max(1, Math.min(parseInt(reqQuery.limit) || 10, 100));
+    const offset = (page - 1) * limit;
+
     let whereClauses = [];
     let values = [];
     let paramIndex = 1;
 
-    // Mapping filters to SQL
+    // Mapping filters to SQL placeholders
     const filterMap = {
         gender: 'gender =',
-        age_group: 'age_group =',
         country_id: 'country_id =',
         min_age: 'age >=',
         max_age: 'age <=',
@@ -30,35 +32,33 @@ const fetchProfiles = async (filters, reqQuery) => {
     };
 
     for (const [key, op] of Object.entries(filterMap)) {
-        if (filters[key]) {
+        if (filters[key] !== undefined && filters[key] !== null) {
             whereClauses.push(`${op} $${paramIndex++}`);
             values.push(filters[key]);
         }
     }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-    
-    // Pagination logic
-    const safeLimit = Math.min(parseInt(limit), 50);
-    const offset = (parseInt(page) - 1) * safeLimit;
 
+    // 2. Dynamic Sorting
     const allowedSortFields = ['age', 'gender_probability', 'country_probability', 'created_at'];
     const sortField = allowedSortFields.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
     const sortOrder = reqQuery.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    const dataQuery = `SELECT * FROM profiles ${whereSql} ORDER BY ${sortField} ${sortOrder} LIMIT ${safeLimit} OFFSET ${offset}`;
-    const countQuery = `SELECT COUNT(*) FROM profiles ${whereSql}`;
+    // 3. Optimized Queries
+    const dataSql = `SELECT * FROM profiles ${whereSql} ORDER BY ${sortField} ${sortOrder} LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const countSql = `SELECT COUNT(*) FROM profiles ${whereSql}`;
 
     const [dataRes, countRes] = await Promise.all([
-        pool.query(dataQuery, values),
-        pool.query(countQuery, values)
+        pool.query(dataSql, [...values, limit, offset]),
+        pool.query(countSql, values)
     ]);
 
     return {
         data: dataRes.rows,
         total: parseInt(countRes.rows[0].count),
-        page: parseInt(page),
-        limit: safeLimit
+        page: page,
+        limit: limit
     };
 };
 
