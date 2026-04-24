@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const { parseQuery } = require('./parser'); // This uses the parser logic we wrote earlier
+const { parseQuery } = require('./parser');
 
 const app = express();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -10,25 +10,24 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// Helper function to build the SQL query dynamically
 const fetchProfiles = async (filters, reqQuery) => {
-    // 1. Strict Pagination
     const page = Math.max(1, parseInt(reqQuery.page) || 1);
-    const limit = Math.max(1, parseInt(reqQuery.limit) || 10); // Don't cap at 50 unless necessary
+    const limit = Math.min(50, Math.max(1, parseInt(reqQuery.limit) || 10));
     const offset = (page - 1) * limit;
 
     let whereClauses = [];
     let values = [];
     let paramIndex = 1;
 
-    // Mapping filters - Ensuring we handle "0" or "false" correctly
+    // FIX 1: Added age_group to filterMap
     const filterMap = {
-        gender: 'gender =',
-        country_id: 'country_id =',
-        min_age: 'age >=',
-        max_age: 'age <=',
+        gender:                 'gender =',
+        age_group:              'age_group =',
+        country_id:             'country_id =',
+        min_age:                'age >=',
+        max_age:                'age <=',
         min_gender_probability: 'gender_probability >=',
-        min_country_probability: 'country_probability >='
+        min_country_probability:'country_probability >='
     };
 
     for (const [key, op] of Object.entries(filterMap)) {
@@ -40,13 +39,18 @@ const fetchProfiles = async (filters, reqQuery) => {
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    // 2. Sorting
     const allowedSort = ['age', 'gender_probability', 'country_probability', 'created_at'];
     const sortField = allowedSort.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
     const sortOrder = reqQuery.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    // 3. Queries
-    const dataSql = `SELECT * FROM profiles ${whereSql} ORDER BY ${sortField} ${sortOrder} LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const dataSql = `
+        SELECT id, name, gender, gender_probability, age, age_group,
+               country_id, country_name, country_probability,
+               to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at
+        FROM profiles ${whereSql}
+        ORDER BY ${sortField} ${sortOrder}
+        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
     const countSql = `SELECT COUNT(*) FROM profiles ${whereSql}`;
 
     const [dataRes, countRes] = await Promise.all([
@@ -54,42 +58,63 @@ const fetchProfiles = async (filters, reqQuery) => {
         pool.query(countSql, values)
     ]);
 
-    const totalItems = parseInt(countRes.rows[0].count);
+    const total = parseInt(countRes.rows[0].count);
 
-    // This specific response structure is what most HNG/Insighta graders look for
+    // FIX 2: Flat response structure matching spec exactly
     return {
         status: "success",
-        data: dataRes.rows,
-        pagination: {
-            total: totalItems,
-            page: page,
-            limit: limit,
-            total_pages: Math.ceil(totalItems / limit)
-        }
+        page,
+        limit,
+        total,
+        data: dataRes.rows
     };
 };
+
 // ENDPOINT 1: Standard Filtering
 app.get('/api/profiles', async (req, res) => {
     try {
+        // Validate sort_by if provided
+        const allowedSort = ['age', 'gender_probability', 'country_probability', 'created_at'];
+        if (req.query.sort_by && !allowedSort.includes(req.query.sort_by)) {
+            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
+        }
+        if (req.query.order && !['asc', 'desc'].includes(req.query.order.toLowerCase())) {
+            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
+        }
+        if (req.query.gender && !['male', 'female'].includes(req.query.gender)) {
+            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
+        }
+        const validAgeGroups = ['child', 'teenager', 'adult', 'senior'];
+        if (req.query.age_group && !validAgeGroups.includes(req.query.age_group)) {
+            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
+        }
+
         const result = await fetchProfiles(req.query, req.query);
-        res.json({ status: "success", ...result });
+        res.json(result);
     } catch (err) {
+        console.error(err);
         res.status(500).json({ status: "error", message: "Internal server error" });
     }
 });
 
-// ENDPOINT 2: Natural Language Query
+// ENDPOINT 2: Natural Language Search
 app.get('/api/profiles/search', async (req, res) => {
     const { q } = req.query;
-    if (!q) return res.status(400).json({ status: "error", message: "Missing query parameter 'q'" });
+    if (!q || !q.trim()) {
+        return res.status(400).json({ status: "error", message: "Missing or empty parameter: q" });
+    }
 
-    const filters = parseQuery(q);
-    if (!filters) return res.status(400).json({ status: "error", message: "Unable to interpret query" });
+    const filters = parseQuery(q.trim());
+
+    if (!filters || Object.keys(filters).length === 0) {
+        return res.status(422).json({ status: "error", message: "Unable to interpret query" });
+    }
 
     try {
         const result = await fetchProfiles(filters, req.query);
-        res.json({ status: "success", ...result });
+        res.json(result);
     } catch (err) {
+        console.error(err);
         res.status(500).json({ status: "error", message: "Internal server error" });
     }
 });
