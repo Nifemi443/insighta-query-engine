@@ -10,7 +10,13 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-/** Age bands aligned with seed data: senior 60+, adult 18–59, teenager 13–17, child ≤12 */
+/** Spec: sort_by → age | created_at | gender_probability only */
+const ALLOWED_SORT = ['age', 'created_at', 'gender_probability'];
+const ALLOWED_ORDER = ['asc', 'desc'];
+const ALLOWED_GENDER = ['male', 'female'];
+const ALLOWED_AGE_GROUP = ['child', 'teenager', 'adult', 'senior'];
+
+/** Age bands for rows with NULL age_group (should not occur after proper seed) */
 const AGE_GROUP_FROM_AGE_SQL =
     "CASE WHEN age <= 12 THEN 'child' WHEN age BETWEEN 13 AND 17 THEN 'teenager' WHEN age BETWEEN 18 AND 59 THEN 'adult' ELSE 'senior' END";
 
@@ -19,7 +25,6 @@ const intOr = (val, fallback) => {
     return Number.isFinite(n) ? n : fallback;
 };
 
-/** Grader-friendly envelope: only these keys; COUNT from PG may be string/BigInt — must be JSON numbers */
 const buildProfilesJsonBody = (page, limit, total, rows) => ({
     status: 'success',
     page: intOr(page, 1),
@@ -41,6 +46,46 @@ function serializeProfileRow(row) {
         country_probability: row.country_probability == null ? null : Number(row.country_probability),
         created_at: row.created_at
     };
+}
+
+/**
+ * Validates GET /api/profiles and GET /api/profiles/search list query params per task spec.
+ * @param {object} query - req.query
+ * @param {{ forSearch?: boolean }} opts - if forSearch, only validates pagination + sort (not filter fields)
+ */
+function validateListQuery(query, opts = {}) {
+    const { forSearch } = opts;
+
+    if (!forSearch) {
+        if (query.sort_by && !ALLOWED_SORT.includes(query.sort_by)) return false;
+        if (query.gender && !ALLOWED_GENDER.includes(query.gender)) return false;
+        if (query.age_group && !ALLOWED_AGE_GROUP.includes(query.age_group)) return false;
+
+        const numericFilters = ['min_age', 'max_age', 'min_gender_probability', 'min_country_probability'];
+        for (const k of numericFilters) {
+            if (query[k] !== undefined && query[k] !== '' && Number.isNaN(Number(query[k]))) return false;
+        }
+
+        if (query.country_id !== undefined && query.country_id !== '') {
+            const cid = String(query.country_id).trim();
+            if (!/^[A-Za-z]{2}$/.test(cid)) return false;
+        }
+    } else {
+        if (query.sort_by && !ALLOWED_SORT.includes(query.sort_by)) return false;
+    }
+
+    if (query.order && !ALLOWED_ORDER.includes(String(query.order).toLowerCase())) return false;
+
+    if (query.page !== undefined && query.page !== '') {
+        const p = intOr(query.page, NaN);
+        if (!Number.isFinite(p) || p < 1) return false;
+    }
+    if (query.limit !== undefined && query.limit !== '') {
+        const l = intOr(query.limit, NaN);
+        if (!Number.isFinite(l) || l < 1 || l > 50) return false;
+    }
+
+    return true;
 }
 
 const fetchProfiles = async (filters, reqQuery) => {
@@ -65,12 +110,12 @@ const fetchProfiles = async (filters, reqQuery) => {
     }
 
     const filterMap = {
-        gender:                 'gender =',
-        country_id:             'country_id =',
-        min_age:                'age >=',
-        max_age:                'age <=',
+        gender: 'gender =',
+        country_id: 'country_id =',
+        min_age: 'age >=',
+        max_age: 'age <=',
         min_gender_probability: 'gender_probability >=',
-        min_country_probability:'country_probability >='
+        min_country_probability: 'country_probability >='
     };
 
     for (const [key, op] of Object.entries(filterMap)) {
@@ -93,8 +138,7 @@ const fetchProfiles = async (filters, reqQuery) => {
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    const allowedSort = ['age', 'gender_probability', 'country_probability', 'created_at'];
-    const sortField = allowedSort.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
+    const sortField = ALLOWED_SORT.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
     const sortOrder = reqQuery.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
     const dataSql = `
@@ -117,44 +161,34 @@ const fetchProfiles = async (filters, reqQuery) => {
     return buildProfilesJsonBody(page, limit, total, dataRes.rows);
 };
 
-// ENDPOINT 1: Standard Filtering
 app.get('/api/profiles', async (req, res) => {
     try {
-        // Validate sort_by if provided
-        const allowedSort = ['age', 'gender_probability', 'country_probability', 'created_at'];
-        if (req.query.sort_by && !allowedSort.includes(req.query.sort_by)) {
-            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
-        }
-        if (req.query.order && !['asc', 'desc'].includes(req.query.order.toLowerCase())) {
-            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
-        }
-        if (req.query.gender && !['male', 'female'].includes(req.query.gender)) {
-            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
-        }
-        const validAgeGroups = ['child', 'teenager', 'adult', 'senior'];
-        if (req.query.age_group && !validAgeGroups.includes(req.query.age_group)) {
-            return res.status(422).json({ status: "error", message: "Invalid query parameters" });
+        if (!validateListQuery(req.query, { forSearch: false })) {
+            return res.status(422).json({ status: 'error', message: 'Invalid query parameters' });
         }
 
         const body = await fetchProfiles(req.query, req.query);
         return res.status(200).json(body);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ status: "error", message: "Internal server error" });
+        return res.status(500).json({ status: 'error', message: 'Server failure' });
     }
 });
 
-// ENDPOINT 2: Natural Language Search
 app.get('/api/profiles/search', async (req, res) => {
     const { q } = req.query;
     if (!q || !q.trim()) {
-        return res.status(400).json({ status: "error", message: "Missing or empty parameter: q" });
+        return res.status(400).json({ status: 'error', message: 'Missing or empty parameter: q' });
+    }
+
+    if (!validateListQuery(req.query, { forSearch: true })) {
+        return res.status(422).json({ status: 'error', message: 'Invalid query parameters' });
     }
 
     const filters = parseQuery(q.trim());
 
     if (!filters || Object.keys(filters).length === 0) {
-        return res.status(422).json({ status: "error", message: "Unable to interpret query" });
+        return res.status(422).json({ status: 'error', message: 'Unable to interpret query' });
     }
 
     try {
@@ -162,8 +196,12 @@ app.get('/api/profiles/search', async (req, res) => {
         return res.status(200).json(body);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ status: "error", message: "Internal server error" });
+        return res.status(500).json({ status: 'error', message: 'Server failure' });
     }
+});
+
+app.use((req, res) => {
+    res.status(404).json({ status: 'error', message: 'Not found' });
 });
 
 const PORT = process.env.PORT || 3000;

@@ -47,8 +47,8 @@ const parseQuery = (query) => {
 
     const betweenMatch = q.match(/\bbetween\s+(\d+)\s+and\s+(\d+)/);
     if (betweenMatch) {
-        filters.min_age = parseInt(betweenMatch[1]);
-        filters.max_age = parseInt(betweenMatch[2]);
+        filters.min_age = parseInt(betweenMatch[1], 10);
+        filters.max_age = parseInt(betweenMatch[2], 10);
     }
 
     // 5. Country mapping
