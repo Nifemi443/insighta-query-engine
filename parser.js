@@ -16,7 +16,7 @@ const parseQuery = (query) => {
     // 2. Age group keywords (sets age_group field directly)
     if (/\b(child|children|kids?)\b/.test(q)) {
         filters.age_group = 'child';
-    } else if (/\bteenagers?\b/.test(q)) {
+    } else if (/\b(teenagers?|teens?)\b/.test(q)) {
         filters.age_group = 'teenager';
     } else if (/\badults?\b/.test(q)) {
         filters.age_group = 'adult';
@@ -32,11 +32,18 @@ const parseQuery = (query) => {
 
     // 4. Dynamic numeric age extraction
     // FIX: "above 30" → min_age=30 (not 31). Spec says "females above 30" → min_age=30
-    const aboveMatch = q.match(/\b(?:above|over|older than)\s+(\d+)/);
-    if (aboveMatch) filters.min_age = parseInt(aboveMatch[1]);
+    const agedMatch = q.match(/\b(?:aged?|age)\s+(\d+)\b/);
+    if (agedMatch) {
+        const a = parseInt(agedMatch[1], 10);
+        filters.min_age = a;
+        filters.max_age = a;
+    }
 
-    const belowMatch = q.match(/\b(?:under|below|younger than)\s+(\d+)/);
-    if (belowMatch) filters.max_age = parseInt(belowMatch[1]);
+    const aboveMatch = q.match(/\b(?:above|over|older than|greater than)\s+(\d+)/);
+    if (aboveMatch) filters.min_age = parseInt(aboveMatch[1], 10);
+
+    const belowMatch = q.match(/\b(?:under|below|younger than|less than)\s+(\d+)/);
+    if (belowMatch) filters.max_age = parseInt(belowMatch[1], 10);
 
     const betweenMatch = q.match(/\bbetween\s+(\d+)\s+and\s+(\d+)/);
     if (betweenMatch) {
