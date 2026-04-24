@@ -42,12 +42,11 @@ const fetchProfiles = async (filters, reqQuery) => {
     const safeLimit = Math.min(parseInt(limit), 50);
     const offset = (parseInt(page) - 1) * safeLimit;
 
-    // Safety check for sorting
-    const allowedSort = ['age', 'created_at', 'gender_probability'];
-    const finalSort = allowedSort.includes(sort_by) ? sort_by : 'created_at';
-    const finalOrder = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const allowedSortFields = ['age', 'gender_probability', 'country_probability', 'created_at'];
+    const sortField = allowedSortFields.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
+    const sortOrder = reqQuery.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    const dataQuery = `SELECT * FROM profiles ${whereSql} ORDER BY ${finalSort} ${finalOrder} LIMIT ${safeLimit} OFFSET ${offset}`;
+    const dataQuery = `SELECT * FROM profiles ${whereSql} ORDER BY ${sortField} ${sortOrder} LIMIT ${safeLimit} OFFSET ${offset}`;
     const countQuery = `SELECT COUNT(*) FROM profiles ${whereSql}`;
 
     const [dataRes, countRes] = await Promise.all([
