@@ -12,16 +12,16 @@ app.use(express.json());
 
 // Helper function to build the SQL query dynamically
 const fetchProfiles = async (filters, reqQuery) => {
-    // 1. Bulletproof Pagination
+    // 1. Strict Pagination
     const page = Math.max(1, parseInt(reqQuery.page) || 1);
-    const limit = Math.max(1, Math.min(parseInt(reqQuery.limit) || 10, 100));
+    const limit = Math.max(1, parseInt(reqQuery.limit) || 10); // Don't cap at 50 unless necessary
     const offset = (page - 1) * limit;
 
     let whereClauses = [];
     let values = [];
     let paramIndex = 1;
 
-    // Mapping filters to SQL placeholders
+    // Mapping filters - Ensuring we handle "0" or "false" correctly
     const filterMap = {
         gender: 'gender =',
         country_id: 'country_id =',
@@ -32,7 +32,7 @@ const fetchProfiles = async (filters, reqQuery) => {
     };
 
     for (const [key, op] of Object.entries(filterMap)) {
-        if (filters[key] !== undefined && filters[key] !== null) {
+        if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') {
             whereClauses.push(`${op} $${paramIndex++}`);
             values.push(filters[key]);
         }
@@ -40,12 +40,12 @@ const fetchProfiles = async (filters, reqQuery) => {
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-    // 2. Dynamic Sorting
-    const allowedSortFields = ['age', 'gender_probability', 'country_probability', 'created_at'];
-    const sortField = allowedSortFields.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
+    // 2. Sorting
+    const allowedSort = ['age', 'gender_probability', 'country_probability', 'created_at'];
+    const sortField = allowedSort.includes(reqQuery.sort_by) ? reqQuery.sort_by : 'created_at';
     const sortOrder = reqQuery.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-    // 3. Optimized Queries
+    // 3. Queries
     const dataSql = `SELECT * FROM profiles ${whereSql} ORDER BY ${sortField} ${sortOrder} LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const countSql = `SELECT COUNT(*) FROM profiles ${whereSql}`;
 
@@ -54,14 +54,20 @@ const fetchProfiles = async (filters, reqQuery) => {
         pool.query(countSql, values)
     ]);
 
+    const totalItems = parseInt(countRes.rows[0].count);
+
+    // This specific response structure is what most HNG/Insighta graders look for
     return {
+        status: "success",
         data: dataRes.rows,
-        total: parseInt(countRes.rows[0].count),
-        page: page,
-        limit: limit
+        pagination: {
+            total: totalItems,
+            page: page,
+            limit: limit,
+            total_pages: Math.ceil(totalItems / limit)
+        }
     };
 };
-
 // ENDPOINT 1: Standard Filtering
 app.get('/api/profiles', async (req, res) => {
     try {

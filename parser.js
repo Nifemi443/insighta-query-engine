@@ -31,17 +31,19 @@ const parseQuery = (query) => {
     if (belowMatch) filters.max_age = parseInt(belowMatch[1]) - 1;
 
     // 4. Country Mapping
+    // Instead of 'break', check for multiple possibilities
     const countries = {
         'nigeria': 'NG', 'nigerian': 'NG',
         'kenya': 'KE', 'kenyan': 'KE',
         'ghana': 'GH', 'ghanaian': 'GH',
-        'usa': 'US', 'america': 'US'
+        'usa': 'US', 'america': 'US',
+        'uk': 'GB', 'london': 'GB'
     };
 
     for (const [name, id] of Object.entries(countries)) {
         if (q.includes(name)) {
             filters.country_id = id;
-            break;
+            // No break here, let it finish checking
         }
     }
 
