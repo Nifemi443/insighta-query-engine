@@ -10,19 +10,33 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+/** Age bands aligned with seed data: senior 60+, adult 18–59, teenager 13–17, child ≤12 */
+const AGE_GROUP_FROM_AGE_SQL =
+    "CASE WHEN age <= 12 THEN 'child' WHEN age BETWEEN 13 AND 17 THEN 'teenager' WHEN age BETWEEN 18 AND 59 THEN 'adult' ELSE 'senior' END";
+
 const fetchProfiles = async (filters, reqQuery) => {
-    const page = Math.max(1, parseInt(reqQuery.page) || 1);
-    const limit = Math.min(50, Math.max(1, parseInt(reqQuery.limit) || 10));
+    const page = Math.max(1, parseInt(reqQuery.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(reqQuery.limit, 10) || 10));
     const offset = (page - 1) * limit;
 
     let whereClauses = [];
     let values = [];
     let paramIndex = 1;
 
-    // FIX 1: Added age_group to filterMap
+    const f = { ...filters };
+    if ((f.country_id === undefined || f.country_id === null || f.country_id === '') && f.country) {
+        f.country_id = f.country;
+    }
+
+    const ageGroupVal = f.age_group !== undefined && f.age_group !== null && f.age_group !== '' ? f.age_group : null;
+    if (ageGroupVal) {
+        whereClauses.push(`(age_group = $${paramIndex} OR (age_group IS NULL AND (${AGE_GROUP_FROM_AGE_SQL}) = $${paramIndex + 1}))`);
+        values.push(ageGroupVal, ageGroupVal);
+        paramIndex += 2;
+    }
+
     const filterMap = {
         gender:                 'gender =',
-        age_group:              'age_group =',
         country_id:             'country_id =',
         min_age:                'age >=',
         max_age:                'age <=',
@@ -31,10 +45,17 @@ const fetchProfiles = async (filters, reqQuery) => {
     };
 
     for (const [key, op] of Object.entries(filterMap)) {
-        if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') {
-            whereClauses.push(`${op} $${paramIndex++}`);
-            values.push(filters[key]);
+        if (f[key] === undefined || f[key] === null || f[key] === '') continue;
+        let v = f[key];
+        if (key === 'min_age' || key === 'max_age') {
+            v = parseInt(v, 10);
+            if (Number.isNaN(v)) continue;
+        } else if (key === 'min_gender_probability' || key === 'min_country_probability') {
+            v = parseFloat(v);
+            if (Number.isNaN(v)) continue;
         }
+        whereClauses.push(`${op} $${paramIndex++}`);
+        values.push(v);
     }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
@@ -58,14 +79,23 @@ const fetchProfiles = async (filters, reqQuery) => {
         pool.query(countSql, values)
     ]);
 
-    const total = parseInt(countRes.rows[0].count);
+    const total = parseInt(countRes.rows[0].count, 10);
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
-    // FIX 2: Flat response structure matching spec exactly
     return {
         status: "success",
         page,
+        current_page: page,
         limit,
         total,
+        total_pages: totalPages,
+        pagination: {
+            current_page: page,
+            limit,
+            per_page: limit,
+            total,
+            total_pages: totalPages
+        },
         data: dataRes.rows
     };
 };
